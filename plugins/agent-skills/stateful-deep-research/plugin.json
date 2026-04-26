@@ -1,0 +1,48 @@
+{
+  "schema": "skill-1.0.0",
+  "hubId": "stateful-deep-research",
+  "name": "Stateful Deep Research",
+  "version": "1.0.0",
+  "description": "A high-performance deep research tool with hierarchical memory, adaptive compression, and conflict resolution.",
+  "active": true,
+  "imported": true,
+  "entrypoint": {
+    "file": "handler.js",
+    "params": {
+      "researchQuery": {
+        "type": "string",
+        "description": "The research question to investigate"
+      },
+      "searchResults": {
+        "type": "string",
+        "description": "Web search results (JSON or text) from MCP web_search for the initial query"
+      },
+      "followUps": {
+        "type": "string",
+        "description": "JSON array of follow-up search results, each with query and searchResults fields. Used in round-2+ of multi-round research."
+      }
+    }
+  },
+  "setup_args": {
+    "MAX_SOURCES": {
+      "type": "string",
+      "default": "15",
+      "input": {
+        "type": "text",
+        "default": "15",
+        "placeholder": "15",
+        "hint": "Maximum number of sources to process"
+      }
+    }
+  },
+  "examples": [
+    {
+      "prompt": "Search the web for: What are the current best warehouse management systems for logistics companies?",
+      "call": "{\"researchQuery\": \"What are the current best warehouse management systems for logistics companies?\"}"
+    },
+    {
+      "prompt": "Produce a research report for: What are the current best warehouse management systems for logistics companies? Results from web search: [{\"title\":\"G2 top WMS\",\"url\":\"https://www.g2.com/...\",\"snippet\":\"Manhattan Associates, Oracle NetSuite WMS, and SAP EWM are top contenders\"}]",
+      "call": "{\"researchQuery\": \"What are the current best warehouse management systems for logistics companies?\", \"searchResults\": \"{\\\"title\\\":\\\"G2 top WMS\\\", \\\"url\\\":\\\"https://www.g2.com/...\\\", \\\"snippet\\\":\\\"Manhattan Associates, Oracle NetSuite WMS, and SAP EWM are top contenders\\\"}\"}"
+    }
+  ]
+}
