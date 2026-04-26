@@ -340,7 +340,7 @@ async function processResearchLoop(query, env, ctx, callerId) {
 
       if (facts.length >= 6 && conflicts.length === 0) {
         // Enough depth, synthesize final report
-        return synthesizeReport(query, storage);
+        return await synthesizeReport(query, storage);
       }
 
       // Still need more drilling
@@ -404,15 +404,7 @@ function buildInitialSearchPrompt(query) {
   });
 }
 
-function synthesizeReport(query, storage) {
-  const facts = storage.topFacts(30);
-  const conflicts = storage.getConflicts();
-
-  if (facts.length === 0) {
-    return JSON.stringify({ status: "COMPLETED", instruction: `I couldn't find enough information about "${query}" to write a detailed report. Try a different query.` });
-  }
-
-  // Group facts by topic keywords
+async function llmSynthesizeReport(query, facts, conflicts) {
   const topics = {};
   facts.forEach(f => {
     const fact = f.fact.toLowerCase();
@@ -424,37 +416,93 @@ function synthesizeReport(query, storage) {
       (topics['Competitive Landscape'] ??= []).push(f);
     } else if (/(?:customer|user|adoption|demand|pricing|subscription|client|buyer|buyer|buyer)/.test(fact)) {
       (topics['Customer Insights'] ??= []).push(f);
-    } else if (/(?:risk|threat|challenge|issue|concern|problem|limitation|vulnerability|downside)/.test(fact)) {
-      (topics['Risks & Challenges'] ??= []).push(f);
-    } else if (/(?:founder|ceo|executive|management|board|team|staff|employee|workforce)/.test(fact)) {
-      (topics['Leadership & Management'] ??= []).push(f);
     } else {
       (topics['General Overview'] ??= []).push(f);
     }
   });
 
-  if (Object.keys(topics).length === 0) {
-    topics['Key Findings'] = facts;
+  const sections = Object.entries(topics)
+    .map(([title, sectionFacts]) => `### ${title}\n\n${sectionFacts.map(f => `- **${f.fact.slice(0, 200)}** (conf. ${f.confidence.toFixed(2)}, sources: ${f.sources})`).join('\n  ')}`)
+    .join('\n\n');
+
+  const prompt = buildSynthesisPrompt(query, { topics, conflicts, uniqueSources: [...new Set(facts.map(f => f.source))] });
+  const resultRaw = await callLLM(prompt);
+  if (resultRaw) {
+    return JSON.stringify({ status: "COMPLETED", instruction: resultRaw });
   }
 
-  // Build the narrative report
-  const intro = `# Research Report: ${query}\n\n`;
-  const summaryIntro = buildExecutiveSummary(query, facts, topics);
-  const sections = buildThematicSections(topics, query);
-  const conflictsSection = buildConflictsSection(conflicts);
-  const methodology = buildMethodology(query, facts);
-  const conclusion = buildConclusion(query, facts);
-
-  const report = [intro, summaryIntro, '', sections, '', conflictsSection, '', methodology, '', conclusion].join('\n').trim();
-
-  return JSON.stringify({
-    status: "COMPLETED",
-    instruction: report,
-    prompt: report
-  });
+  // Fallback to bullet-point report if LLM call fails
+  return synthesizeReportFallback(query, facts, conflicts, topics);
 }
 
-function buildExecutiveSummary(query, facts, topics) {
+function buildSynthesisPrompt(query, input) {
+  return `Write a comprehensive, Google-Deep-Research-style article on "${query}" using the following verified facts gathered from multiple rounds of deep research.
+
+Write in professional journalistic style with flowing prose, not bullet points or numbered lists. Use paragraph structure, transitional sentences, and thematic flow.
+
+## Facts by Topic
+${Object.entries(input.topics).map(([title, facts]) => {
+  return `### ${title}
+${facts.map(f => '- ' + f.fact.slice(0, 200)).join('\n')}`;
+}).join('\n\n')}
+
+## Conflicting Findings
+${input.conflicts.length > 0 ? input.conflicts.map(c => `**${c.claimId}**: ${c.versions.join(' vs ')}`).join('\n') : 'None detected.'}
+
+## Unique Sources (${input.uniqueSources.length})
+${input.uniqueSources.join(', ')}
+
+## Writing Instructions
+- Write 1500-2000 words (a full article, not a summary)
+- Use flowing prose with smooth transitions between paragraphs
+- Use appropriate subheadings for section structure
+- Use italics for emphasis
+- Do NOT use bullet points
+- Do NOT use numbered lists (1, 2, 3)
+- Do NOT use the format "- **Claim** (conf. 0.95)"
+- Do NOT use markdown tables
+- Integrate facts naturally into sentences
+- Reference multiple sources where appropriate
+- Use data-driven reasoning and cite findings with specificity
+- Include a strong introductory paragraph that sets the context
+- Include a brief conclusion that synthesizes the key takeaways
+- Address and resolve any conflicting findings
+- Maintain a professional, authoritative tone throughout
+
+Write the article now. Output ONLY the article content — no preamble, no "Here is the article", no closing remarks.`;
+}
+
+async function callLLM(prompt) {
+  try {
+    const res = await fetch('http://localhost:1337/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json?.choices?.[0]?.message?.content?.trim();
+  } catch {
+    return null;
+  }
+}
+
+function synthesizeReport(query, storage) {
+  const facts = storage.topFacts(30);
+  const conflicts = storage.getConflicts();
+
+  if (facts.length === 0) {
+    return JSON.stringify({ status: "COMPLETED", instruction: `I couldn't find enough information about "${query}" to write a detailed report. Try a different query.` });
+  }
+
+  // Try LLM-powered prose synthesis (Google-Deep-Research style)
+  return llmSynthesizeReport(query, facts, conflicts);
+}
+
+function synthesizeReportFallback(query, facts, conflicts, topics) {
   const totalFacts = facts.length;
   const topicCount = Object.keys(topics).length;
   const topFacts = facts.slice(0, 5).map(f => f.fact.slice(0, 150));
