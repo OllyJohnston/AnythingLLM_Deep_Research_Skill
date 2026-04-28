@@ -20,29 +20,55 @@
       "followUps": {
         "type": "string",
         "description": "JSON array of follow-up search results, each with query and searchResults fields. Used in round-2+ of multi-round research."
+      },
+      "urls": {
+        "type": "string",
+        "description": "Array of URLs to fetch full content for (two-phase summary-first search flow)"
+      },
+      "searchAngles": {
+        "type": "string",
+        "description": "JSON array of search angles generated during query clarification. Each angle is used to run a separate get-web-search-summaries query."
       }
     }
   },
   "setup_args": {
     "MAX_SOURCES": {
       "type": "string",
-      "default": "15",
+      "default": "40",
       "input": {
         "type": "text",
-        "default": "15",
-        "placeholder": "15",
+        "default": "40",
+        "placeholder": "40",
         "hint": "Maximum number of sources to process"
+      }
+    },
+    "MAX_ANGLES": {
+      "type": "string",
+      "default": "10",
+      "input": {
+        "type": "text",
+        "default": "10",
+        "placeholder": "10",
+        "hint": "Number of search angles to generate during query clarification"
       }
     }
   },
   "examples": [
     {
-      "prompt": "Search the web for: What are the current best warehouse management systems for logistics companies?",
-      "call": "{\"researchQuery\": \"What are the current best warehouse management systems for logistics companies?\"}"
+      "prompt": "Use the stateful-deep-research skill to produce a research report for: 'What are the latest trends in renewable energy storage?'",
+      "call": "{\"researchQuery\": \"What are the latest trends in renewable energy storage?\"}"
     },
     {
-      "prompt": "Produce a research report for: What are the current best warehouse management systems for logistics companies? Results from web search: [{\"title\":\"G2 top WMS\",\"url\":\"https://www.g2.com/...\",\"snippet\":\"Manhattan Associates, Oracle NetSuite WMS, and SAP EWM are top contenders\"}]",
-      "call": "{\"researchQuery\": \"What are the current best warehouse management systems for logistics companies?\", \"searchResults\": \"{\\\"title\\\":\\\"G2 top WMS\\\", \\\"url\\\":\\\"https://www.g2.com/...\\\", \\\"snippet\\\":\\\"Manhattan Associates, Oracle NetSuite WMS, and SAP EWM are top contenders\\\"}\"}"
+      "prompt": "Use the stateful-deep-research skill to produce a research report for: 'What are the current best warehouse management systems?' The skill will generate search angles, perform multi-angle searches, and then synthesize findings into a report.",
+      "call": "{\"researchQuery\": \"What are the current best warehouse management systems?\"}"
+    },
+    {
+      "prompt": "Use the stateful-deep-research skill with pre-collected search results: 'What are the latest trends in renewable energy storage?' Results from web search: [{\"title\":\"Energy Storage Review\",\"url\":\"https://example.com\",\"snippet\":\"LFP batteries now account for 90% of grid storage deployments\"}]",
+      "call": "{\"researchQuery\": \"What are the latest trends in renewable energy storage?\", \"searchResults\": \"[{\\\"title\\\": \\\"Energy Storage Review\\\", \\\"url\\\": \\\"https://example.com\\\", \\\"snippet\\\": \\\"LFP batteries now account for 90% of grid storage deployments\\\"}]\""
+    },
+    {
+      "prompt": "Use the stateful-deep-research skill with follow-up search results for continued deep research on renewable energy storage trends.",
+      "call": "{\"researchQuery\": \"Latest trends in renewable energy storage\", \"followUps\": \"[{\\\"query\\\": \\\"sodium-ion battery developments 2026\\\", \\\"searchResults\\\": \\\"...\\\"}]\""
     }
   ]
 }

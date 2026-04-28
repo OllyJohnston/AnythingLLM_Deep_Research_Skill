@@ -174,7 +174,7 @@ function splitLines(content) {
   return lines;
 }
 
-function extractClaims(searchResults) {
+function extractClaims(searchResults, maxSources = 40) {
   const claims = [];
 
   // Parse MCP-synthesized output
@@ -182,8 +182,11 @@ function extractClaims(searchResults) {
 
   // If MCP returned structured JSON with title/url/snippet, extract from each
   let sources = [];
+  const searchText = typeof searchResults === 'string' ? searchResults : JSON.stringify(searchResults);
+
+  // If MCP returned structured JSON with title/url/snippet, extract from each
   try {
-    const parsed = JSON.parse(searchResults);
+    const parsed = JSON.parse(searchText);
     if (Array.isArray(parsed)) {
       sources = parsed;
     } else if (parsed.results && Array.isArray(parsed.results)) {
@@ -192,11 +195,11 @@ function extractClaims(searchResults) {
       sources = [{ snippet: parsed.searchResults || parsed.snippet || '', url: `mcp-${parsed.query.slice(0, 10)}` }];
     } else {
       const urlRegex = /https?:\/\/[^\s]+/g;
-      const urls = searchResults.match(urlRegex) || [];
+      const urls = searchText.match(urlRegex) || [];
       sources = urls.map((url, i) => ({ index: i, url }));
     }
   } catch (_) {
-    const lines = searchResults.split('\n').filter(l => l.trim());
+    const lines = searchText.split('\n').filter(l => l.trim());
     const urlRegex = /https?:\/\/[^\s]+/g;
     sources = lines.map((line, i) => {
       const urls = line.match(urlRegex) || [];
@@ -204,7 +207,7 @@ function extractClaims(searchResults) {
     });
   }
 
-  for (let i = 0; i < Math.min(sources.length, 10); i++) {
+  for (let i = 0; i < Math.min(sources.length, maxSources); i++) {
     const src = sources[i] || {};
     const content = src.snippet || src.content || src.summary || src.searchResults || '';
     const url = src.url || `source_${i}`;
@@ -275,6 +278,7 @@ function trimAndSplitCompound(text) {
 
 // ---------- Deep research loop ----------
 async function processResearchLoop(query, env, ctx, callerId) {
+  const MAX_SOURCES = this?.runtimeArgs?.MAX_SOURCES ? parseInt(this.runtimeArgs.MAX_SOURCES) : 15;
   const storageRoot = process.env.STORAGE_DIR || path.join(__dirname, "..", "storage");
   await ensureStorageDir(storageRoot);
   const storage = new ResearchStorage(storageRoot);
@@ -297,7 +301,7 @@ async function processResearchLoop(query, env, ctx, callerId) {
     // Round 1: Initial broad search
     if (env.searchResults) {
       ctx.introspect(`${callerId} processing initial search results`);
-      await processSearchResults(env.searchResults, storage);
+      await processSearchResults(env.searchResults, storage, MAX_SOURCES);
       const facts = storage.topFacts(8);
       if (facts.length === 0) {
         ctx.introspect(`${callerId} no initial facts found`);
@@ -324,7 +328,7 @@ async function processResearchLoop(query, env, ctx, callerId) {
 
       for (const fu of followUps) {
         if (fu && fu.searchResults) {
-          const claims = extractClaims(fu.searchResults);
+          const claims = extractClaims(fu.searchResults, MAX_SOURCES);
           for (const c of claims) {
             storage.upsertFact(c.claimId, c.fact, c.confidence || 0.85, c.source, c.authority);
           }
@@ -338,9 +342,10 @@ async function processResearchLoop(query, env, ctx, callerId) {
 
       ctx.introspect(`${callerId} after follow-ups: ${facts.length} facts, ${conflicts.length} conflicts`);
 
+      // Fixed follow-up threshold: if fewer than 6 facts, request follow-ups; if >= 6, synthesize
       if (facts.length >= 6 && conflicts.length === 0) {
         // Enough depth, synthesize final report
-        return await synthesizeReport(query, storage);
+        return await synthesizeReport(query, storage, ctx, callerId);
       }
 
       // Still need more drilling
@@ -357,8 +362,8 @@ async function processResearchLoop(query, env, ctx, callerId) {
   }
 }
 
-function processSearchResults(searchResults, storage) {
-  const claims = extractClaims(searchResults);
+function processSearchResults(searchResults, storage, maxSources) {
+  const claims = extractClaims(searchResults, maxSources);
   for (const c of claims) {
     storage.upsertFact(c.claimId, c.fact, c.confidence || 0.85, c.source, c.authority);
   }
@@ -367,44 +372,56 @@ function processSearchResults(searchResults, storage) {
 
 function buildFollowUpPrompt(query, facts) {
   const topicSuggestions = [
-    "Current status and latest news about",
-    "Key competitors and market alternatives to",
-    "Technical architecture and how it works",
+    "Current status and latest developments in",
+    "Key players and competitive landscape for",
+    "Technical details and how it works",
     "Industry trends and future outlook for",
-    "Financial performance and recent growth"
+    "Financial performance and growth metrics for"
   ];
 
-  // Build a short summary of what we already know
+  // Build a summary of what we already know
   const factSummary = facts.map(f => f.fact.slice(0, 120)).slice(0, 3).join('; ');
+  const uniqueTopics = new Set(facts.map(f => f.claimId.split('_')[0]));
+  const topicCount = uniqueTopics.size;
+  const sourceCount = [...new Set(facts.map(f => f.source))].length;
 
-  const instruction = `I've found ${facts.length} facts about "${query}" (preliminary summary: ${factSummary}).
+  const instruction = `I've found ${facts.length} facts about "${query}" across ${topicCount} topics from ${sourceCount} sources (summary: ${factSummary}).
 
-To produce a Google-level research report, I need deeper coverage. Please perform these follow-up searches:
+To produce a comprehensive Google-level research report, I need deeper coverage. Please perform these follow-up searches using the "full-web-search" MCP tool:
 
-1. Current status and latest news about ${query}
-2. Key competitors and alternatives to ${query}
-3. Technical implementation and how ${query} works
-4. Industry trends and market outlook for ${query}
-5. Financial performance and growth metrics for ${query}
+1. ${topicSuggestions[0]} ${query}
+2. ${topicSuggestions[1]} ${query}
+3. ${topicSuggestions[2]} ${query}
+4. ${topicSuggestions[3]} ${query}
+5. ${topicSuggestions[4]} ${query}
 
-Use the web_search MCP tool for each. Then call this skill again with the results.\n\nFormat: {"followUps": [{"query": "...", "searchResults": "..."}, ...]}`;
+For each search use: { limit: 12, maxContentLength: 2000 }.
+
+CRITICAL: After gathering results, assemble a JSON array of objects with fields "query" and "searchResults" for each search. Then call this skill with the \`followUps\` parameter set to that exact array.
+
+Format: {"followUps": [{"query": "search query text", "searchResults": {"content": "...", "query": "...", ...}}, ...]}`;
 
   return JSON.stringify({
     status: "COMPLETED",
     instruction,
-    prompt: `Please perform 5 follow-up web searches for these topics and return the results as searchResults objects for this skill.`
+    prompt: `Please perform 5 follow-up web searches with full-web-search (limit=12, maxContentLength=2000), then combine all results and call this skill again with the \`followUps\` parameter.`
   });
 }
 
 function buildInitialSearchPrompt(query) {
   return JSON.stringify({
     status: "COMPLETED",
-    instruction: `Use the web_search MCP tool to perform a broad search for: "${query}".\nThen call this skill again with the \`searchResults\` parameter set to those results.`,
-    prompt: `Please perform a web search for: "${query}" using the web_search tool. Return the search results (titles, URLs, and snippets) as the searchResults parameter when you call this skill again.`
+    instruction: `Use the "full-web-search" MCP tool with: { query: "${query}", limit: 12, maxContentLength: 2000 }
+For 2-3 key URLs from results, also call "get-single-web-page-content" to extract full article text.
+Then call this skill again with the \`searchResults\` parameter set to all results combined.
+
+Format: { "researchQuery": "...", "searchResults": [ {"title": "...", "url": "...", "snippet": "...", "content": "..."}, ... ] }`,
+    prompt: `Please perform a web search for: "${query}" using full-web-search with limit=12, maxContentLength=2000. Then call this skill again with the searchResults parameter.`
   });
 }
 
-async function llmSynthesizeReport(query, facts, conflicts) {
+async function llmSynthesizeReport(query, facts, conflicts, ctx, callerId) {
+  ctx.introspect(`${callerId} llmSynthesizeReport: ${facts.length} facts`);
   const topics = {};
   facts.forEach(f => {
     const fact = f.fact.toLowerCase();
@@ -421,65 +438,95 @@ async function llmSynthesizeReport(query, facts, conflicts) {
     }
   });
 
-  const sections = Object.entries(topics)
-    .map(([title, sectionFacts]) => `### ${title}\n\n${sectionFacts.map(f => `- **${f.fact.slice(0, 200)}** (conf. ${f.confidence.toFixed(2)}, sources: ${f.sources})`).join('\n  ')}`)
-    .join('\n\n');
+  // If we don't have enough facts, return a follow-up prompt instead of a weak article
+  if (facts.length < 10 || Object.keys(topics).length < 3) {
+    const topicGaps = Object.entries(topics).map(([t, fs]) => `${t} (${fs.length} findings)`).join('; ');
+    return `I have only ${facts.length} findings on "${query}" so far. I need more data. Please search for additional information on:
 
-  const prompt = buildSynthesisPrompt(query, { topics, conflicts, uniqueSources: [...new Set(facts.map(f => f.source))] });
+${topicGaps}
+
+Use the web_search tool to find more specific research results. Then call this skill again with the searchResults parameter.`;
+  }
+
+  // Return structured state for the transformation phase
+  const uniqueSources = [...new Set(facts.map(f => f.source))].slice(0, 10);
+  const state = { query, facts, conflicts, topics, uniqueSources, topicCount: Object.keys(topics).length };
+  return JSON.stringify({ status: "FACTS_CAPTURED", query, state, prompt: `Captured ${facts.length} facts across ${Object.keys(topics).length} topics. Now invoke the transformation phase to convert these into a detailed article.` });
+}
+
+async function transformToArticle(query, facts, conflicts, topics, uniqueSources) {
+  const now = new Date();
+  const currentYear = String(now.getFullYear());
+
+  const topicNarratives = Object.entries(topics).map(([title, fs]) => {
+    const selected = fs.slice(0, 8).map(f => {
+      let text = f.fact.replace(/^[\d\-\*]+\.?\s*/, '').trim();
+      // Strip "2025" references so the LLM doesn't anchor to them
+      // (the LLM already knows the current year via [Current date: ...])
+      text = text.replace(/\b2025\b/gi, '');
+      text = text.replace(/\b2024\b/gi, '');
+      // Fix orphaned double spaces
+      text = text.replace(/\s{2,}/g, ' ').trim();
+      return text;
+    });
+    return `### ${title}\n\n${selected.map(f => `• ${f.slice(0, 200)}`).join('\n')}`;
+  }).join('\n\n');
+
+  let conflictNote = '';
+  if (conflicts.length > 0) {
+    const conflictText = conflicts.map(c => c.claimId + ': ' + c.versions.join(' vs ')).join('. ');
+    conflictNote = `\n\nConflicting findings detected — you should address these in the article and explain the resolution: ${conflictText}.`;
+  }
+
+  const prompt = `You are an expert research analyst writing a comprehensive article in the style of a Google Deep Research publication.
+
+## What you do
+Turn the source material below into a more verbose article like Google Deep Research would produce. We need the depth and analysis to explain what this actually means.
+
+## Current year
+Write in the current year. Do not write about the past — all data and research is from the current year.
+
+## Source Material
+${topicNarratives}
+
+${uniqueSources?.length > 0 ? `## Sources Cited\n${uniqueSources.join(', ')}` : ''}
+${conflictNote}
+
+## Critical
+- Write flowing prose with smooth transitions
+- NO bullet points, NO numbered lists, NO markdown tables
+- Use italics sparingly for emphasis
+
+## Article Structure
+- Strong opening paragraph that establishes context and significance
+- 4-6 well-developed sections with appropriate subheadings
+- Brief conclusion that synthesizes the key takeaways
+
+## Output Rules
+- Output ONLY the article — no preamble, no "Here is the article", no closing remarks
+- Do NOT format as a list of findings — transform into a proper article
+- Address any conflicting findings and explain resolution
+
+Write the article now.`;
+
   const resultRaw = await callLLM(prompt);
   if (resultRaw) {
     return JSON.stringify({ status: "COMPLETED", instruction: resultRaw });
   }
-
-  // Fallback to bullet-point report if LLM call fails
   return synthesizeReportFallback(query, facts, conflicts, topics);
-}
-
-function buildSynthesisPrompt(query, input) {
-  return `Write a comprehensive, Google-Deep-Research-style article on "${query}" using the following verified facts gathered from multiple rounds of deep research.
-
-Write in professional journalistic style with flowing prose, not bullet points or numbered lists. Use paragraph structure, transitional sentences, and thematic flow.
-
-## Facts by Topic
-${Object.entries(input.topics).map(([title, facts]) => {
-  return `### ${title}
-${facts.map(f => '- ' + f.fact.slice(0, 200)).join('\n')}`;
-}).join('\n\n')}
-
-## Conflicting Findings
-${input.conflicts.length > 0 ? input.conflicts.map(c => `**${c.claimId}**: ${c.versions.join(' vs ')}`).join('\n') : 'None detected.'}
-
-## Unique Sources (${input.uniqueSources.length})
-${input.uniqueSources.join(', ')}
-
-## Writing Instructions
-- Write 1500-2000 words (a full article, not a summary)
-- Use flowing prose with smooth transitions between paragraphs
-- Use appropriate subheadings for section structure
-- Use italics for emphasis
-- Do NOT use bullet points
-- Do NOT use numbered lists (1, 2, 3)
-- Do NOT use the format "- **Claim** (conf. 0.95)"
-- Do NOT use markdown tables
-- Integrate facts naturally into sentences
-- Reference multiple sources where appropriate
-- Use data-driven reasoning and cite findings with specificity
-- Include a strong introductory paragraph that sets the context
-- Include a brief conclusion that synthesizes the key takeaways
-- Address and resolve any conflicting findings
-- Maintain a professional, authoritative tone throughout
-
-Write the article now. Output ONLY the article content — no preamble, no "Here is the article", no closing remarks.`;
 }
 
 async function callLLM(prompt) {
   try {
+    const currentDate = new Date().toLocaleDateString('en-GB', {
+      day: 'numeric', month: 'long', year: 'numeric'
+    });
     const res = await fetch('http://localhost:1337/api/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'gpt-4o',
-        messages: [{ role: 'user', content: prompt }],
+        messages: [{ role: 'user', content: `[Current date: ${currentDate}] ${prompt}` }],
       }),
     });
     if (!res.ok) return null;
@@ -490,18 +537,33 @@ async function callLLM(prompt) {
   }
 }
 
-function synthesizeReport(query, storage) {
-  const facts = storage.topFacts(30);
+async function synthesizeReport(query, storage, ctx, callerId) {
+  const facts = storage.topFacts(15);
   const conflicts = storage.getConflicts();
+  const result = await llmSynthesizeReport(query, facts, conflicts, ctx, callerId);
 
-  if (facts.length === 0) {
-    return JSON.stringify({ status: "COMPLETED", instruction: `I couldn't find enough information about "${query}" to write a detailed report. Try a different query.` });
+  // Check if we need more data
+  if (typeof result === 'string' && !result.startsWith('{')) {
+    return result; // Follow-up prompt
   }
 
-  // Try LLM-powered prose synthesis (Google-Deep-Research style)
-  return llmSynthesizeReport(query, facts, conflicts);
-}
+  // Parse structured state from llmSynthesizeReport
+  const parsed = JSON.parse(result);
+  if (parsed.status === "FACTS_CAPTURED") {
+    // Now transform to article
+    const articleResult = await transformToArticle(
+      parsed.query,
+      parsed.state.facts,
+      parsed.state.conflicts,
+      parsed.state.topics,
+      parsed.state.uniqueSources
+    );
+    return articleResult;
+  }
 
+  // Fallback
+  return synthesizeReportFallback(parsed.query, parsed.state?.facts ?? [], parsed.state?.conflicts ?? [], {});
+}
 function synthesizeReportFallback(query, facts, conflicts, topics) {
   const totalFacts = facts.length;
   const topicCount = Object.keys(topics).length;
@@ -585,19 +647,120 @@ function buildConclusion(query, facts) {
   return `## Conclusion\n\nThis report synthesized ${totalFacts} verified findings on "${query}" across multiple thematic areas. The multi-round deep research process combined broad initial searches with targeted follow-up drill-downs to build a comprehensive understanding of the subject. Key findings are presented above with confidence scores and source attribution.\n\nFor deeper investigation into any specific area, use the follow-up search capability provided in the research flow.\n`;
 }
 
+// ---------- Two-Phase Search Handlers ----------
+
+function buildClarificationPrompt(query, maxAngles) {
+  const limit = maxAngles ?? 10;
+  return JSON.stringify({
+    status: "COMPLETED",
+    instruction: `Analyse the following research query and generate ${limit} distinct search angles to ensure comprehensive coverage:
+
+Query: "${query}"
+
+Please extract the key topics, dimensions, and perspectives that need to be covered. For example, for "WMS systems" you might generate angles like:
+- Current market leaders and their features
+- Technical architecture and integration capabilities
+- Industry adoption and customer case studies
+- Pricing and licensing models
+- Future trends (AI, automation, cloud)
+
+Return a JSON array of strings, where each string is one search angle:
+{"angles": ["Angle 1", "Angle 2", "Angle 3", ...]}`,
+    prompt: `Please analyse this research query and generate ${limit} search angles: "${query}"`
+  });
+}
+
+function buildMultiAngleSearchPrompt(angles, maxAngles) {
+  const limit = maxAngles ?? 5;
+  const angleList = angles.map((a, i) => `${i + 1}. ${a}`).join('\n');
+  return JSON.stringify({
+    status: "COMPLETED",
+    instruction: `Use the "get-web-search-summaries" MCP tool to search for each of these angles (limit: ${limit} per angle):
+
+${angleList}
+
+For each angle, call "get-web-search-summaries" with { query: "...", limit: ${limit} }.
+
+After gathering summaries for all angles, select the most relevant and high-value URLs across all angles (aim for 10-20 distinct URLs).
+
+Then call this skill again with the \`webFetchsingle\` handler, passing the URLs of your selected sources.
+
+Format: { "urls": ["https://...", "https://...", ...] }`,
+    prompt: `Please perform web searches for these angles using get-web-search-summaries (limit=${limit} per angle), then call this skill with the best URLs.`
+  });
+}
+
+function buildSummarySearchPrompt(query) {
+  return JSON.stringify({
+    status: "COMPLETED",
+    instruction: `Use the "get-web-search-summaries" MCP tool to search for: "${query}"
+  
+  Set the limit to 50 (or the maximum available) to get a wide net of results.
+  
+  Read through all the results (titles, URLs, and brief descriptions). Pick the 8-12 most relevant and interesting ones for a deep report on this topic.
+  
+  Then call this skill again with the \`webFetchsingle\` handler, passing the URLs of your selected sources.
+  
+  Format: { "urls": ["https://...", "https://...", ...] }`,
+    prompt: `Please perform a broad web search for: "${query}" using get-web-search-summaries with limit=50, then call this skill with the best URLs.`
+  });
+}
+
+function buildFullFetchPrompt(urls, researchQuery) {
+  const urlList = urls.map((u, i) => `${i + 1}. ${u}`).join('\n');
+  return JSON.stringify({
+    status: "COMPLETED",
+    instruction: `Use the "get-single-web-page-content" MCP tool to retrieve the full content of each of these URLs:
+
+${urlList}
+
+For each URL, call "get-single-web-page-content" with the URL. Then call this skill again with the \`deepResearch\` handler, passing:
+- researchQuery: "${researchQuery}"
+- searchResults: an array of objects, each with { title, url, snippet, content }
+
+Format: { "researchQuery": "...", "searchResults": [{ "title": "...", "url": "...", "snippet": "...", "content": "..." }, ...] }`,
+    prompt: `Please fetch full article content for the URLs above, then call this skill with the searchResults parameter.`
+  });
+}
+
 // ---------- Main Handler ----------
 module.exports.runtime = {
-  handler: async function ({ researchQuery, searchResults, followUps }) {
+  handler: async function ({ researchQuery, searchResults, followUps, urls, searchAngles }) {
     const callerId = `StatefulResearch-v${this.config.version}`;
 
-    if (!researchQuery) {
-      this.introspect(`${callerId} ERROR: researchQuery is missing or undefined.`);
-      return "Please provide a research query.";
-    }
+    try {
+      if (!researchQuery) {
+        this.introspect(`${callerId} ERROR: researchQuery is missing or undefined.`);
+        return "Please provide a research query.";
+      }
 
-    return await processResearchLoop(researchQuery, {
-      searchResults,
-      followUps
-    }, this, callerId);
+      // If searchAngles provided, this is the multi-angle search stage
+      if (searchAngles && Array.isArray(searchAngles)) {
+        const MAX_ANGLES = this?.runtimeArgs?.MAX_ANGLES ? parseInt(this.runtimeArgs.MAX_ANGLES) : 10;
+        return buildMultiAngleSearchPrompt(searchAngles, MAX_ANGLES);
+      }
+
+      // If searchResults provided, this is the full-fetch stage (after webFetchsingle)
+      if (urls && Array.isArray(urls)) {
+        return buildFullFetchPrompt(urls, researchQuery);
+      }
+
+      // If searchResults or followUps provided, process normally
+      if (searchResults || followUps) {
+        return await processResearchLoop(researchQuery, {
+          searchResults,
+          followUps
+        }, this, callerId);
+      }
+
+      // No params — generate clarification prompt (new clarification step)
+      const MAX_ANGLES = this?.runtimeArgs?.MAX_ANGLES ? parseInt(this.runtimeArgs.MAX_ANGLES) : 10;
+      return buildClarificationPrompt(researchQuery, MAX_ANGLES);
+
+    } catch (e) {
+      this.introspect(`${callerId} ERROR: ${e.message}`);
+      this.logger(`${callerId} stack`, e.stack);
+      return `Deep Research Error: ${e.message}`;
+    }
   }
 };
