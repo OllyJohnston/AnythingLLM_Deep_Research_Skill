@@ -12,7 +12,7 @@ class ResearchStorage {
   constructor(storageDir) {
     this.graphPath = path.join(storageDir, "research-graph.json");
     this.cachePath = path.join(storageDir, "research-reflex-cache.json");
-    this.nodes = {};
+    this.nodes = Object.create(null);
 
     const adapter = new FileSync(this.cachePath);
     this.db = low(adapter);
@@ -29,7 +29,13 @@ class ResearchStorage {
   }
 
   upsertFact(claimId, fact, confidence, source, authority) {
-    const node = this.nodes[claimId] ?? { claimId, confidence: 0, versions: [] };
+    let node = this.nodes[claimId];
+    if (node === undefined) {
+      node = Object.create(null);
+      node.claimId = claimId;
+      node.confidence = 0;
+      node.versions = [];
+    }
 
     const existingVersion = node.versions.find(v => v.fact === fact);
     if (!existingVersion) {
@@ -45,9 +51,10 @@ class ResearchStorage {
   }
 
   topFacts(limit = 15) {
+    if (typeof limit !== 'number' || limit < 1) limit = 15;
     return Object.values(this.nodes)
-      .sort((a, b) => b.confidence - a.confidence)
-      .slice(0, limit)
+      .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
+      .slice(0, Math.min(limit, 100))
       .map(node => ({
         claimId: node.claimId,
         fact: node.versions[node.versions.length - 1].fact,
@@ -58,15 +65,17 @@ class ResearchStorage {
 
   getConflicts() {
     return Object.values(this.nodes)
-      .filter(n => new Set(n.versions.map(v => v.fact)).size > 1)
+      .filter(n => n && n.versions && new Set(n.versions.map(v => v.fact)).size > 1)
       .map(n => ({ claimId: n.claimId, versions: n.versions }));
   }
 
   getCachedResponse(query) {
+    if (typeof query !== 'string') return null;
     return this.db.get('reflex').find({ query }).value();
   }
 
   saveToCache(query, response) {
+    if (typeof query !== 'string' || typeof response !== 'string') return;
     this.db.get('reflex')
       .push({ query, response, hits: 1, updated_at: Date.now() })
       .write();
@@ -79,6 +88,33 @@ class ResearchStorage {
 }
 
 // ---------- Helpers (loaded inside functions to avoid module-load failures) ----------
+
+/** Maximum allowed size (bytes) for any parsed JSON payload. */
+const MAX_JSON_SIZE = 100 * 1024; // 100 KB
+
+/**
+ * Sanitise a string for safe embedding inside a Markdown instruction block.
+ * Escapes the characters that could shift context (headings, block-quotes, lists, code, bold).
+ */
+function sanitizeForMarkdown(str) {
+  if (typeof str !== "string") return String(str);
+  return str
+    .replace(/\\/g, "\\\\")
+    .replace(/^(\s*\d+\.\s)/m, "  $1")
+    .replace(/^#{1,6}\s/m, "# ")
+    .replace(/^>\s*/m, "> ")
+    .replace(/^-/gm, " -")
+    .replace(/^`{1,3}/gm, " `")
+    .replace(/\r?\n/g, " ");
+}
+
+/** Parse a JSON string safely: validate size first, then parse, then validate the result. */
+function safeJsonParse(jsonString) {
+  if (typeof jsonString !== "string") return null;
+  if (jsonString.length > MAX_JSON_SIZE) return null;
+  try { return JSON.parse(jsonString); } catch (_) { return null; }
+}
+
 function cleanHtml(html) {
   try {
     const { JSDOM } = require("jsdom");
@@ -89,9 +125,9 @@ function cleanHtml(html) {
     const doc = dom.window.document;
     if (!doc || !doc.body) return "";
     doc.querySelectorAll("script, style, nav, footer, iframe").forEach((s) => s.remove());
-    let text = doc.body.textContent || "";
-    text = DOMPurify.sanitize(text);
-    return (text || "").replace(/\s+/g, " ").trim().slice(0, 5000);
+    doc.body.innerHTML = DOMPurify.sanitize(doc.body.innerHTML);
+    const text = doc.body.textContent || "";
+    return text.replace(/\s+/g, " ").trim().slice(0, 5000);
   } catch (_) {
     return (html || "")
       .replace(/<[^>]+>/g, " ")
@@ -184,21 +220,25 @@ function extractClaims(searchResults, maxSources = 40) {
   let sources = [];
   const searchText = typeof searchResults === 'string' ? searchResults : JSON.stringify(searchResults);
 
+  if (searchText.length > MAX_JSON_SIZE) {
+    return claims;
+  }
+
   // If MCP returned structured JSON with title/url/snippet, extract from each
-  try {
-    const parsed = JSON.parse(searchText);
+  const parsed = safeJsonParse(searchText);
+  if (parsed) {
     if (Array.isArray(parsed)) {
       sources = parsed;
     } else if (parsed.results && Array.isArray(parsed.results)) {
       sources = parsed.results;
     } else if (parsed.query && parsed.searchResults) {
-      sources = [{ snippet: parsed.searchResults || parsed.snippet || '', url: `mcp-${parsed.query.slice(0, 10)}` }];
+      sources = [{ snippet: parsed.searchResults || parsed.snippet || '', url: `mcp-${(parsed.query || '').slice(0, 10)}` }];
     } else {
       const urlRegex = /https?:\/\/[^\s]+/g;
       const urls = searchText.match(urlRegex) || [];
       sources = urls.map((url, i) => ({ index: i, url }));
     }
-  } catch (_) {
+  } else {
     const lines = searchText.split('\n').filter(l => l.trim());
     const urlRegex = /https?:\/\/[^\s]+/g;
     sources = lines.map((line, i) => {
@@ -278,7 +318,8 @@ function trimAndSplitCompound(text) {
 
 // ---------- Deep research loop ----------
 async function processResearchLoop(query, env, ctx, callerId) {
-  const MAX_SOURCES = this?.runtimeArgs?.MAX_SOURCES ? parseInt(this.runtimeArgs.MAX_SOURCES) : 15;
+  const rawMax = parseInt(this?.runtimeArgs?.MAX_SOURCES ?? '');
+  const MAX_SOURCES = isNaN(rawMax) ? 15 : Math.min(Math.max(rawMax, 1), 100);
   const storageRoot = process.env.STORAGE_DIR || path.join(__dirname, "..", "storage");
   await ensureStorageDir(storageRoot);
   const storage = new ResearchStorage(storageRoot);
@@ -316,8 +357,9 @@ async function processResearchLoop(query, env, ctx, callerId) {
     // Round 2+: Follow-up search processing
     let followUps = [];
     if (env.followUps) {
-      if (typeof env.followUps === 'string') {
-        try { followUps = JSON.parse(env.followUps); } catch (_) { followUps = []; }
+    if (typeof env.followUps === 'string') {
+      const parsed = safeJsonParse(env.followUps);
+      followUps = Array.isArray(parsed) ? parsed : [];
       } else if (Array.isArray(env.followUps)) {
         followUps = env.followUps;
       }
@@ -380,20 +422,20 @@ function buildFollowUpPrompt(query, facts) {
   ];
 
   // Build a summary of what we already know
-  const factSummary = facts.map(f => f.fact.slice(0, 120)).slice(0, 3).join('; ');
+  const factSummary = facts.map(f => sanitizeForMarkdown(f.fact)).slice(0, 3).join('; ');
   const uniqueTopics = new Set(facts.map(f => f.claimId.split('_')[0]));
   const topicCount = uniqueTopics.size;
   const sourceCount = [...new Set(facts.map(f => f.source))].length;
 
-  const instruction = `I've found ${facts.length} facts about "${query}" across ${topicCount} topics from ${sourceCount} sources (summary: ${factSummary}).
+    const instruction = `I've found ${facts.length} facts about "${sanitizeForMarkdown(query)}" across ${topicCount} topics from ${sourceCount} sources (summary: ${factSummary}).
 
 To produce a comprehensive Google-level research report, I need deeper coverage. Please perform these follow-up searches using the "full-web-search" MCP tool:
 
-1. ${topicSuggestions[0]} ${query}
-2. ${topicSuggestions[1]} ${query}
-3. ${topicSuggestions[2]} ${query}
-4. ${topicSuggestions[3]} ${query}
-5. ${topicSuggestions[4]} ${query}
+1. ${sanitizeForMarkdown(topicSuggestions[0])} ${sanitizeForMarkdown(query)}
+2. ${sanitizeForMarkdown(topicSuggestions[1])} ${sanitizeForMarkdown(query)}
+3. ${sanitizeForMarkdown(topicSuggestions[2])} ${sanitizeForMarkdown(query)}
+4. ${sanitizeForMarkdown(topicSuggestions[3])} ${sanitizeForMarkdown(query)}
+5. ${sanitizeForMarkdown(topicSuggestions[4])} ${sanitizeForMarkdown(query)}
 
 For each search use: { limit: 12, maxContentLength: 2000 }.
 
@@ -411,12 +453,12 @@ Format: {"followUps": [{"query": "search query text", "searchResults": {"content
 function buildInitialSearchPrompt(query) {
   return JSON.stringify({
     status: "COMPLETED",
-    instruction: `Use the "full-web-search" MCP tool with: { query: "${query}", limit: 12, maxContentLength: 2000 }
+    instruction: `Use the "full-web-search" MCP tool with: { query: "${sanitizeForMarkdown(query)}", limit: 12, maxContentLength: 2000 }
 For 2-3 key URLs from results, also call "get-single-web-page-content" to extract full article text.
 Then call this skill again with the \`searchResults\` parameter set to all results combined.
 
 Format: { "researchQuery": "...", "searchResults": [ {"title": "...", "url": "...", "snippet": "...", "content": "..."}, ... ] }`,
-    prompt: `Please perform a web search for: "${query}" using full-web-search with limit=12, maxContentLength=2000. Then call this skill again with the searchResults parameter.`
+    prompt: `Please perform a web search for: "${sanitizeForMarkdown(query)}" using full-web-search with limit=12, maxContentLength=2000. Then call this skill again with the searchResults parameter.`
   });
 }
 
@@ -461,20 +503,19 @@ async function transformToArticle(query, facts, conflicts, topics, uniqueSources
   const topicNarratives = Object.entries(topics).map(([title, fs]) => {
     const selected = fs.slice(0, 8).map(f => {
       let text = f.fact.replace(/^[\d\-\*]+\.?\s*/, '').trim();
-      // Strip "2025" references so the LLM doesn't anchor to them
-      // (the LLM already knows the current year via [Current date: ...])
+      text = sanitizeForMarkdown(text);
       text = text.replace(/\b2025\b/gi, '');
       text = text.replace(/\b2024\b/gi, '');
-      // Fix orphaned double spaces
       text = text.replace(/\s{2,}/g, ' ').trim();
       return text;
     });
-    return `### ${title}\n\n${selected.map(f => `• ${f.slice(0, 200)}`).join('\n')}`;
+    const titleSafe = sanitizeForMarkdown(title);
+    return `### ${titleSafe}\n\n${selected.map(f => `• ${f.slice(0, 200)}`).join('\n')}`;
   }).join('\n\n');
 
   let conflictNote = '';
   if (conflicts.length > 0) {
-    const conflictText = conflicts.map(c => c.claimId + ': ' + c.versions.join(' vs ')).join('. ');
+    const conflictText = conflicts.map(c => sanitizeForMarkdown(c.claimId) + ': ' + c.versions.map(v => v.fact.slice(0, 100)).join(' vs ')).join('. ');
     conflictNote = `\n\nConflicting findings detected — you should address these in the article and explain the resolution: ${conflictText}.`;
   }
 
@@ -506,6 +547,8 @@ ${conflictNote}
 - Output ONLY the article — no preamble, no "Here is the article", no closing remarks
 - Do NOT format as a list of findings — transform into a proper article
 - Address any conflicting findings and explain resolution
+
+## End of Source Material
 
 Write the article now.`;
 
@@ -581,25 +624,27 @@ function synthesizeReportFallback(query, facts, conflicts, topics) {
 }
 
 function buildThematicSections(topics, query) {
-  const entries = Object.entries(topics).sort((a, b) => b[1].length - a[1].length);
+  const entries = Object.entries(topics).sort((a, b) => (b[1] ?? []).length - (a[1] ?? []).length);
   const sectionParts = [];
 
   entries.forEach(([title, sectionFacts], idx) => {
-    if (sectionFacts.length === 0) return;
+    if (!sectionFacts || sectionFacts.length === 0) return;
 
     // Write flowing prose rather than bullet points
-    let prose = `### ${title}\n\n`;
+    const titleSafe = sanitizeForMarkdown(title);
+    let prose = `### ${titleSafe}\n\n`;
     const facts = sectionFacts.map(f => ({ ...f, original: f.fact }));
 
     // Sort by confidence for authoritative claims first
-    facts.sort((a, b) => b.confidence - a.confidence);
+    facts.sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
 
     // Convert facts to narrative sentences
     const sentences = facts.map(f => {
       const raw = f.fact;
+      const sanitized = sanitizeForMarkdown(raw);
       // If the fact already looks like a sentence, use it; otherwise, prefix it
-      if (/^[A-Z]/.test(raw.trim())) return raw.trim();
-      return `${raw.charAt(0).toUpperCase()}${raw.slice(1)}`;
+      if (/^[A-Z]/.test(sanitized.trim())) return sanitized.trim();
+      return sanitized.charAt(0).toUpperCase() + sanitized.slice(1);
     });
 
     // Group into paragraphs of 3-5 sentences
@@ -612,9 +657,10 @@ function buildThematicSections(topics, query) {
     prose += paragraphs.map(p => `${p}.\n\n`).join('');
 
     // Add source attribution
-    const allSources = [...new Set(facts.map(f => f.source))].slice(0, 8);
+    const allSources = [...new Set((facts || []).map(f => f.source))].slice(0, 8);
     if (allSources.length > 0) {
-      prose += `*Sources: ${allSources.join(', ')}*\n`;
+      const sourcesSafe = allSources.map(s => sanitizeForMarkdown(s));
+      prose += `*Sources: ${sourcesSafe.join(', ')}*\n`;
     }
 
     sectionParts.push(prose);
@@ -707,7 +753,14 @@ function buildSummarySearchPrompt(query) {
 }
 
 function buildFullFetchPrompt(urls, researchQuery) {
-  const urlList = urls.map((u, i) => `${i + 1}. ${u}`).join('\n');
+  const VALID_URL = /^https?:\/\/[a-zA-Z0-9.\-_]+(?:\.[a-zA-Z]{2,})?(?::\d+)?(?:\/[^\s]*)?$/;
+  const safeUrls = (Array.isArray(urls) ? urls : [])
+    .filter(u => typeof u === 'string' && VALID_URL.test(u))
+    .map(u => u.slice(0, 2048));
+  if (safeUrls.length === 0) {
+    return JSON.stringify({ status: "COMPLETED", instruction: "No valid URLs provided." });
+  }
+  const urlList = safeUrls.map((u, i) => `${i + 1}. ${u}`).join('\n');
   return JSON.stringify({
     status: "COMPLETED",
     instruction: `Use the "get-single-web-page-content" MCP tool to retrieve the full content of each of these URLs:
@@ -715,7 +768,7 @@ function buildFullFetchPrompt(urls, researchQuery) {
 ${urlList}
 
 For each URL, call "get-single-web-page-content" with the URL. Then call this skill again with the \`deepResearch\` handler, passing:
-- researchQuery: "${researchQuery}"
+- researchQuery: "${sanitizeForMarkdown(researchQuery)}"
 - searchResults: an array of objects, each with { title, url, snippet, content }
 
 Format: { "researchQuery": "...", "searchResults": [{ "title": "...", "url": "...", "snippet": "...", "content": "..." }, ...] }`,
