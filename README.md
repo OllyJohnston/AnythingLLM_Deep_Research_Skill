@@ -162,7 +162,7 @@ If you already have search results:
 ## Runtime Requirements
 
 - **Agent with MCP tools**: The agent must support MCP tool calls (the skill delegates web search to MCP).
-- **Good LLM model**: Multi-round drill-down requires an LLM that handles MCP tool use correctly.
+- **Model with strong tool-calling**: Multi-round drill-down requires an LLM that follows tool-calling instructions precisely. Models like Qwen 3.5/3.6 work very well; others may vary in their adherence to search angle generation, follow-up formatting, and JSON parsing.
 - **Multiple invocations**: The skill re-invokes itself 3-4 times — ensure your AnythingLLM setup supports re-invocation.
 
 ## Constraints
