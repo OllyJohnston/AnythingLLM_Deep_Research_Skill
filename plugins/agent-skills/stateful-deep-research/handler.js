@@ -454,9 +454,9 @@ To produce a comprehensive Google-level research report, I need deeper coverage.
 4. ${sanitizeForMarkdown(topicSuggestions[3])} ${sanitizeForMarkdown(query)}
 5. ${sanitizeForMarkdown(topicSuggestions[4])} ${sanitizeForMarkdown(query)}
 
-For each search use: { limit: 12, maxContentLength: 2000 }.
+For each search use: { limit: 10, maxContentLength: 2000 }.
 
-CRITICAL: After gathering results, assemble a JSON array of objects with fields "query" and "searchResults" for each search. Then call this skill with the \`followUps\` parameter set to that exact array.
+CRITICAL: After gathering results, assemble a JSON array of objects with fields "query" and "searchResults" for each search. Then call this skill with the \`followUps\` parameter set to that exact array. Do NOT write the article yourself.
 
 Format: {"followUps": [{"query": "search query text", "searchResults": {"content": "...", "query": "...", ...}}, ...]}`;
 
@@ -470,12 +470,14 @@ Format: {"followUps": [{"query": "search query text", "searchResults": {"content
 function buildInitialSearchPrompt(query) {
   return JSON.stringify({
     status: "COMPLETED",
-    instruction: `Use the "full-web-search" MCP tool with: { query: "${sanitizeForMarkdown(query)}", limit: 12, maxContentLength: 2000 }
+    instruction: `Use the "full-web-search" MCP tool with: { query: "${sanitizeForMarkdown(query)}", limit: 10, maxContentLength: 2000 }
 For 2-3 key URLs from results, also call "get-single-web-page-content" to extract full article text.
 Then call this skill again with the \`searchResults\` parameter set to all results combined.
 
-Format: { "researchQuery": "...", "searchResults": [ {"title": "...", "url": "...", "snippet": "...", "content": "..."}, ... ] }`,
-    prompt: `Please perform a web search for: "${sanitizeForMarkdown(query)}" using full-web-search with limit=12, maxContentLength=2000. Then call this skill again with the searchResults parameter.`
+Format: { "researchQuery": "...", "searchResults": [ {"title": "...", "url": "...", "snippet": "...", "content": "..."}, ... ] }
+
+CRITICAL: You MUST call the stateful-deep-research tool again with the searchResults parameter after gathering results. Do NOT write the article yourself.`,
+    prompt: `Please perform a web search for: "${sanitizeForMarkdown(query)}" using full-web-search with limit=10, maxContentLength=2000. Then call this skill again with the searchResults parameter.`
   });
 }
 
@@ -724,10 +726,11 @@ function buildClarificationPrompt(query) {
     status: "COMPLETED",
     instruction: `Use the "full-web-search" MCP tool to perform a comprehensive web search for: "${sanitizeForMarkdown(query)}"
 
-Set the limit to 12 and maxContentLength to 2000. Then call this skill again with the \`searchResults\` parameter set to all results combined.
+Set the limit to 10 and maxContentLength to 2000. Then call this skill again with the \`searchResults\` parameter set to all results combined.
 
-Format: { "researchQuery": "...", "searchResults": [ {"title": "...", "url": "...", "snippet": "...", "content": "..."}, ... ] }`,
-    prompt: `Please perform a web search for: "${sanitizeForMarkdown(query)}" using full-web-search with limit=12, maxContentLength=2000. Then call this skill again with the searchResults parameter.`
+Format: { "researchQuery": "...", "searchResults": [ {"title": "...", "url": "...", "snippet": "...", "content": "..."}, ... ] }
+
+CRITICAL: You MUST call the stateful-deep-research tool again with the searchResults parameter after gathering results. Do NOT write the article yourself.`
   });
 }
 
@@ -746,8 +749,9 @@ After gathering summaries for all angles, select the most relevant and high-valu
 
 Then call this skill again with the \`webFetchsingle\` handler, passing the URLs of your selected sources.
 
-Format: { "urls": ["https://...", "https://...", ...] }`,
-    prompt: `Please perform web searches for these angles using full-web-search (limit=${limit} per angle), then call this skill with the best URLs.`
+Format: { "urls": ["https://...", "https://...", ...] }
+
+CRITICAL: You MUST call the stateful-deep-research tool again with the urls parameter after this. Do NOT write the article yourself.`
   });
 }
 
