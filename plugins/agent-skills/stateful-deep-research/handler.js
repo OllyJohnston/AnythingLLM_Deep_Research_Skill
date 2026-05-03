@@ -731,8 +731,12 @@ Please extract the key topics, dimensions, and perspectives that need to be cove
 - Future trends (AI, automation, cloud)
 
 Return a JSON array of strings, where each string is one search angle:
-{"angles": ["Angle 1", "Angle 2", "Angle 3", ...]}`,
-    prompt: `Please analyse this research query to generate ${limit} search angles: "${sanitizeForMarkdown(query)}". Then use the "get-web-search-summaries" MCP tool for each angle (limit 5 per angle), and call this skill again with the best URLs from all searches.`
+{"angles": ["Angle 1", "Angle 2", "Angle 3", ...]}
+
+IMPORTANT: After generating the angles, use the "full-web-search" MCP tool to search for each angle (limit: ${maxAngles ?? 5} per angle, maxContentLength: 2000, no includeContent). Then select the most relevant URLs from all results and call this skill again with the "webFetchsingle" handler, passing the URLs array.
+
+Format: { "researchQuery": "...", "urls": ["https://...", "https://...", ...] }`,
+    prompt: `Please analyse this research query to generate ${limit} search angles: "${sanitizeForMarkdown(query)}" and then call this skill with the best URLs from all searches.`
   });
 }
 
@@ -741,18 +745,18 @@ function buildMultiAngleSearchPrompt(angles, maxAngles) {
   const angleList = (angles || []).map((a, i) => `${i + 1}. ${sanitizeForMarkdown(a)}`).join('\n');
   return JSON.stringify({
     status: "COMPLETED",
-    instruction: `Use the "get-web-search-summaries" MCP tool to search for each of these angles (limit: ${limit} per angle):
+    instruction: `Use the "full-web-search" MCP tool to search for each of these angles (limit: ${limit} per angle):
 
 ${angleList}
 
-For each angle, call "get-web-search-summaries" with { query: "...", limit: ${limit} }.
+For each angle, call "full-web-search" with { query: "...", limit: ${limit}, maxContentLength: 2000 }.
 
 After gathering summaries for all angles, select the most relevant and high-value URLs across all angles (aim for 10-20 distinct URLs).
 
 Then call this skill again with the \`webFetchsingle\` handler, passing the URLs of your selected sources.
 
 Format: { "urls": ["https://...", "https://...", ...] }`,
-    prompt: `Please perform web searches for these angles using get-web-search-summaries (limit=${limit} per angle), then call this skill with the best URLs.`
+    prompt: `Please perform web searches for these angles using full-web-search (limit=${limit} per angle), then call this skill with the best URLs.`
   });
 }
 
