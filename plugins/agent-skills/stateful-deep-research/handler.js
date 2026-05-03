@@ -715,28 +715,15 @@ function buildConclusion(query, facts) {
 
 // ---------- Two-Phase Search Handlers ----------
 
-function buildClarificationPrompt(query, maxAngles) {
-  const limit = maxAngles ?? 10;
+function buildClarificationPrompt(query) {
   return JSON.stringify({
     status: "COMPLETED",
-    instruction: `Analyse the following research query and generate ${limit} distinct search angles to ensure comprehensive coverage:
+    instruction: `Use the "full-web-search" MCP tool to perform a comprehensive web search for: "${sanitizeForMarkdown(query)}"
 
-Query: "${sanitizeForMarkdown(query)}"
+Set the limit to 12 and maxContentLength to 2000. Then call this skill again with the \`searchResults\` parameter set to all results combined.
 
-Please extract the key topics, dimensions, and perspectives that need to be covered. For example, for "WMS systems" you might generate angles like:
-- Current market leaders and their features
-- Technical architecture and integration capabilities
-- Industry adoption and customer case studies
-- Pricing and licensing models
-- Future trends (AI, automation, cloud)
-
-Return a JSON array of strings, where each string is one search angle:
-{"angles": ["Angle 1", "Angle 2", "Angle 3", ...]}
-
-IMPORTANT: After generating the angles, use the "full-web-search" MCP tool to search for each angle (limit: ${maxAngles ?? 5} per angle, maxContentLength: 2000, no includeContent). Then select the most relevant URLs from all results and call this skill again with the "webFetchsingle" handler, passing the URLs array.
-
-Format: { "researchQuery": "...", "urls": ["https://...", "https://...", ...] }`,
-    prompt: `Please analyse this research query to generate ${limit} search angles: "${sanitizeForMarkdown(query)}" and then call this skill with the best URLs from all searches.`
+Format: { "researchQuery": "...", "searchResults": [ {"title": "...", "url": "...", "snippet": "...", "content": "..."}, ... ] }`,
+    prompt: `Please perform a web search for: "${sanitizeForMarkdown(query)}" using full-web-search with limit=12, maxContentLength=2000. Then call this skill again with the searchResults parameter.`
   });
 }
 
@@ -830,9 +817,8 @@ module.exports.runtime = {
         }, this, callerId);
       }
 
-      // No params — generate clarification prompt (new clarification step)
-      const MAX_ANGLES = this?.runtimeArgs?.MAX_ANGLES ? parseInt(this.runtimeArgs.MAX_ANGLES) : 10;
-      return buildClarificationPrompt(researchQuery, MAX_ANGLES);
+      // No params — generate clarification prompt (initial search)
+      return buildClarificationPrompt(researchQuery);
 
     } catch (e) {
       this.introspect(`${callerId} ERROR: ${e.message}`);
