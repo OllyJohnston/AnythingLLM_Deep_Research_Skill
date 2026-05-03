@@ -10,6 +10,10 @@ const FileSync = require("lowdb/adapters/FileSync");
 // ---------- Persistence Layer: Knowledge Graph & Reflex Cache ----------
 const STORAGE_DIR_BASE = path.resolve(__dirname, "..", "storage");
 
+async function ensureStorageDir(storageRoot) {
+  await fs.mkdir(storageRoot, { recursive: true });
+}
+
 class ResearchStorage {
   constructor(storageDir) {
     const unsafe = path.resolve(storageDir);
