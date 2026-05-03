@@ -9,6 +9,7 @@ const FileSync = require("lowdb/adapters/FileSync");
 
 // ---------- Persistence Layer: Knowledge Graph & Reflex Cache ----------
 const STORAGE_DIR_BASE = path.resolve(__dirname, "..", "storage");
+const MAX_JSON_SIZE = 2 * 1024 * 1024; // 2MB max JSON size
 
 async function ensureStorageDir(storageRoot) {
   await fs.mkdir(storageRoot, { recursive: true });
