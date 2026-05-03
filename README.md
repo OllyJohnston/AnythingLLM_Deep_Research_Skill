@@ -16,6 +16,12 @@ This skill is **entirely dependent on the `web-search-mcp` server**. The three-p
 
 **To install the `web-search-mcp` server**, follow the instructions in the [web-search-mcp repository](https://github.com/OllyJohnston/web-search-mcp). The skill will not function without these MCP tools.
 
+## Runtime Requirements
+
+- **Agent with MCP tools**: The agent must support MCP tool calls (the skill delegates web search to MCP).
+- **Model with strong tool-calling**: Multi-round drill-down requires an LLM that follows tool-calling instructions precisely. Models like Qwen 3.5/3.6 work very well; others may vary in their adherence to search angle generation, follow-up formatting, and JSON parsing.
+- **Multiple invocations**: The skill re-invokes itself 3-4 times — ensure your AnythingLLM setup supports re-invocation.
+
 ## Installation
 
 1. **Install the web-search-mcp server** (see Prerequisites above).
@@ -158,12 +164,6 @@ If you already have search results:
 ```
 @agent use the stateful-deep-research skill to produce a research report for: "What are the best WMS solutions?" Results from web search: [{ ... }]
 ```
-
-## Runtime Requirements
-
-- **Agent with MCP tools**: The agent must support MCP tool calls (the skill delegates web search to MCP).
-- **Model with strong tool-calling**: Multi-round drill-down requires an LLM that follows tool-calling instructions precisely. Models like Qwen 3.5/3.6 work very well; others may vary in their adherence to search angle generation, follow-up formatting, and JSON parsing.
-- **Multiple invocations**: The skill re-invokes itself 3-4 times — ensure your AnythingLLM setup supports re-invocation.
 
 ## Constraints
 
