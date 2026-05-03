@@ -466,7 +466,7 @@ Format: {"followUps": [{"query": "search query text", "searchResults": {"content
   return JSON.stringify({
     status: "COMPLETED",
     instruction,
-    prompt: `Please perform 5 follow-up web searches with full-web-search (limit=12, maxContentLength=2000), then combine all results and call this skill again with the \`followUps\` parameter.`
+    prompt: `You MUST call the stateful-deep-research tool again as the NEXT step. Use it with: { researchQuery: "...", followUps: [{"query": "...", "searchResults": {...}}, ...] }. Do NOT write the article yourself.`
   });
 }
 
@@ -480,7 +480,7 @@ Then call this skill again with the \`searchResults\` parameter set to all resul
 Format: { "researchQuery": "...", "searchResults": [ {"title": "...", "url": "...", "snippet": "...", "content": "..."}, ... ] }
 
 CRITICAL: You MUST call the stateful-deep-research tool again with the searchResults parameter after gathering results. Do NOT write the article yourself.`,
-    prompt: `Please perform a web search for: "${sanitizeForMarkdown(query)}" using full-web-search with limit=10, maxContentLength=2000. Then call this skill again with the searchResults parameter.`
+    prompt: `You MUST call the stateful-deep-research tool again as the NEXT step. Use it with: { researchQuery: "${sanitizeForMarkdown(query)}", searchResults: [...] } (the search results you just gathered). Do NOT write the article yourself.`
   });
 }
 
@@ -767,10 +767,12 @@ function buildSummarySearchPrompt(query) {
   
   Read through all the results (titles, URLs, and brief descriptions). Pick the 8-12 most relevant and interesting ones for a deep report on this topic.
   
-  Then call this skill again with the \`webFetchsingle\` handler, passing the URLs of your selected sources.
+  Then call this skill again with the \`urls\` handler, passing the URLs of your selected sources.
   
-  Format: { "urls": ["https://...", "https://...", ...] }`,
-    prompt: `Please perform a broad web search for: "${sanitizeForMarkdown(query)}" using get-web-search-summaries with limit=50, then call this skill with the best URLs.`
+  Format: { "urls": ["https://...", "https://...", ...] }
+  
+  CRITICAL: You MUST call the stateful-deep-research tool again as the NEXT step. Use it with: { researchQuery: "requery", searchResults: [...] }. Do NOT write the article yourself.`,
+    prompt: `You MUST call the stateful-deep-research tool again as the NEXT step. Use it with: { researchQuery: "${sanitizeForMarkdown(query)}", urls: [...] }. Do NOT write the article yourself.`
   });
 }
 
@@ -794,7 +796,29 @@ For each URL, call "get-single-web-page-content" with the URL. Then call this sk
 - searchResults: an array of objects, each with { title, url, snippet, content }
 
 Format: { "researchQuery": "...", "searchResults": [{ "title": "...", "url": "...", "snippet": "...", "content": "..." }, ...] }`,
-    prompt: `Please fetch full article content for the URLs above, then call this skill with the searchResults parameter.`
+    prompt: `You MUST call the stateful-deep-research tool again as the NEXT step. Use it with: { researchQuery: "${sanitizeForMarkdown(researchQuery)}", searchResults: [...] }. Do NOT write the article yourself.`
+  });
+}
+
+function buildMultiAngleSearchPrompt(angles, maxAngles) {
+  const limit = maxAngles ?? 5;
+  const angleList = (angles || []).map((a, i) => `${i + 1}. ${sanitizeForMarkdown(a)}`).join('\n');
+  return JSON.stringify({
+    status: "COMPLETED",
+    instruction: `Use the "full-web-search" MCP tool to search for each of these angles (limit: ${limit} per angle):
+
+${angleList}
+
+For each angle, call "full-web-search" with { query: "...", limit: ${limit}, maxContentLength: 2000 }.
+
+After gathering summaries for all angles, select the most relevant and high-value URLs across all angles (aim for 10-20 distinct URLs).
+
+Then call this skill again with the \`searchAngles\` handler, passing the URLs of your selected sources.
+
+Format: { "urls": ["https://...", "https://...", ...] }
+
+CRITICAL: You MUST call the stateful-deep-research tool again with the searchAngles parameter after this. Do NOT write the article yourself.`,
+    prompt: `You MUST call the stateful-deep-research tool again as the NEXT step. Use it with: { researchQuery: "...", searchAngles: [...] }. Do NOT write the article yourself.`
   });
 }
 
@@ -822,15 +846,25 @@ module.exports.runtime = {
       }
 
       // If searchResults provided, this is the full-fetch stage (after webFetchsingle)
-      if (urls && Array.isArray(urls)) {
-        return buildFullFetchPrompt(urls, researchQuery);
+      if (urls) {
+        let parsedUrls = urls;
+        if (typeof urls === 'string') {
+          parsedUrls = safeJsonParse(urls);
+        }
+        if (parsedUrls && Array.isArray(parsedUrls)) {
+          return buildFullFetchPrompt(parsedUrls, researchQuery);
+        }
       }
 
       // If searchResults or followUps provided, process normally
-      if (searchResults || followUps) {
+      if (searchResults) {
+        let parsedResults = searchResults;
+        if (typeof searchResults === 'string') {
+          parsedResults = safeJsonParse(searchResults);
+        }
         return await processResearchLoop(researchQuery, {
-          searchResults,
-          followUps
+          searchResults: parsedResults,
+          followUps: typeof followUps === 'string' ? safeJsonParse(followUps) : followUps
         }, this, callerId);
       }
 
