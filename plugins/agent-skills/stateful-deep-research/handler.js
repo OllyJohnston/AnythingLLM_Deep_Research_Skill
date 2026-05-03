@@ -8,10 +8,16 @@ const low = require("lowdb");
 const FileSync = require("lowdb/adapters/FileSync");
 
 // ---------- Persistence Layer: Knowledge Graph & Reflex Cache ----------
+const STORAGE_DIR_BASE = path.resolve(__dirname, "..", "storage");
+
 class ResearchStorage {
   constructor(storageDir) {
-    this.graphPath = path.join(storageDir, "research-graph.json");
-    this.cachePath = path.join(storageDir, "research-reflex-cache.json");
+    const unsafe = path.resolve(storageDir);
+    if (!unsafe.startsWith(STORAGE_DIR_BASE)) {
+      throw new Error(`Invalid storage directory: must be within ${STORAGE_DIR_BASE}`);
+    }
+    this.graphPath = path.join(unsafe, "research-graph.json");
+    this.cachePath = path.join(unsafe, "research-reflex-cache.json");
     this.nodes = Object.create(null);
 
     const adapter = new FileSync(this.cachePath);
@@ -20,8 +26,8 @@ class ResearchStorage {
   }
 
   async loadGraph() {
-    try { this.nodes = JSON.parse(await fs.readFile(this.graphPath, "utf8")); }
-    catch (_) { this.nodes = {}; }
+    try { this.nodes = safeJsonParse(await fs.readFile(this.graphPath, "utf8")) || Object.create(null); }
+    catch (_) { this.nodes = Object.create(null); }
   }
 
   async saveGraph() {
@@ -82,19 +88,15 @@ class ResearchStorage {
   }
 
   async resetGraph() {
-    this.nodes = {};
+    this.nodes = Object.create(null);
     await this.saveGraph();
   }
 }
 
-// ---------- Helpers (loaded inside functions to avoid module-load failures) ----------
-
-/** Maximum allowed size (bytes) for any parsed JSON payload. */
-const MAX_JSON_SIZE = 100 * 1024; // 100 KB
-
 /**
  * Sanitise a string for safe embedding inside a Markdown instruction block.
- * Escapes the characters that could shift context (headings, block-quotes, lists, code, bold).
+ * Escapes the characters that could shift context (headings, block-quotes, lists, code, bold)
+ * and neutralises prompt-injection vectors (XML tags, command keywords).
  */
 function sanitizeForMarkdown(str) {
   if (typeof str !== "string") return String(str);
@@ -105,7 +107,9 @@ function sanitizeForMarkdown(str) {
     .replace(/^>\s*/m, "> ")
     .replace(/^-/gm, " -")
     .replace(/^`{1,3}/gm, " `")
-    .replace(/\r?\n/g, " ");
+    .replace(/\r?\n/g, " ")
+    .replace(/[<>]/g, m => m === '<' ? '[OPEN_BRACKET]' : '[CLOSE_BRACKET]')
+    .replace(/(?:^|\s)(?:ignore|override|bypass|disregard|skip|reset|new\s+rule|new\s+instruction|new\s+system)\b/i, '[BLOCKED]');
 }
 
 /** Parse a JSON string safely: validate size first, then parse, then validate the result. */
@@ -115,19 +119,32 @@ function safeJsonParse(jsonString) {
   try { return JSON.parse(jsonString); } catch (_) { return null; }
 }
 
+let _cachedCleanHtml = null;
+
 function cleanHtml(html) {
   try {
-    const { JSDOM } = require("jsdom");
-    const createDOMPurify = require("dompurify");
-    const domWindow = new JSDOM("").window;
-    const DOMPurify = createDOMPurify(domWindow);
-    const dom = new JSDOM(html);
-    const doc = dom.window.document;
-    if (!doc || !doc.body) return "";
-    doc.querySelectorAll("script, style, nav, footer, iframe").forEach((s) => s.remove());
-    doc.body.innerHTML = DOMPurify.sanitize(doc.body.innerHTML);
-    const text = doc.body.textContent || "";
-    return text.replace(/\s+/g, " ").trim().slice(0, 5000);
+    if (!_cachedCleanHtml) {
+      try {
+        const { JSDOM } = require("jsdom");
+        const createDOMPurify = require("dompurify");
+        const domWindow = new JSDOM("").window;
+        const DOMPurify = createDOMPurify(domWindow);
+        _cachedCleanHtml = function sanitizeHtml(h) {
+          const dom = new JSDOM(h);
+          const doc = dom.window.document;
+          if (!doc || !doc.body) return "";
+          doc.querySelectorAll("script, style, nav, footer, iframe").forEach((s) => s.remove());
+          doc.body.innerHTML = DOMPurify.sanitize(doc.body.innerHTML);
+          const text = doc.body.textContent || "";
+          return text.replace(/\s+/g, " ").trim().slice(0, 5000);
+        };
+      } catch (_) {
+        _cachedCleanHtml = function sanitizeHtmlFallback(h) {
+          return (h || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 5000);
+        };
+      }
+    }
+    return _cachedCleanHtml(html);
   } catch (_) {
     return (html || "")
       .replace(/<[^>]+>/g, " ")
@@ -135,10 +152,6 @@ function cleanHtml(html) {
       .trim()
       .slice(0, 5000);
   }
-}
-
-async function ensureStorageDir(storageDir) {
-  try { await fs.mkdir(storageDir, { recursive: true }); } catch (_) { /* already exists or permission error */ }
 }
 
 function splitLines(content) {
@@ -317,7 +330,7 @@ function trimAndSplitCompound(text) {
 }
 
 // ---------- Deep research loop ----------
-async function processResearchLoop(query, env, ctx, callerId) {
+async function processResearchLoop(query, env, ctx, callerId, cfg) {
   const rawMax = parseInt(this?.runtimeArgs?.MAX_SOURCES ?? '');
   const MAX_SOURCES = isNaN(rawMax) ? 15 : Math.min(Math.max(rawMax, 1), 100);
   const storageRoot = process.env.STORAGE_DIR || path.join(__dirname, "..", "storage");
@@ -387,7 +400,7 @@ async function processResearchLoop(query, env, ctx, callerId) {
       // Fixed follow-up threshold: if fewer than 6 facts, request follow-ups; if >= 6, synthesize
       if (facts.length >= 6 && conflicts.length === 0) {
         // Enough depth, synthesize final report
-        return await synthesizeReport(query, storage, ctx, callerId);
+        return await synthesizeReport(query, storage, ctx, callerId, cfg);
       }
 
       // Still need more drilling
@@ -483,7 +496,7 @@ async function llmSynthesizeReport(query, facts, conflicts, ctx, callerId) {
   // If we don't have enough facts, return a follow-up prompt instead of a weak article
   if (facts.length < 10 || Object.keys(topics).length < 3) {
     const topicGaps = Object.entries(topics).map(([t, fs]) => `${t} (${fs.length} findings)`).join('; ');
-    return `I have only ${facts.length} findings on "${query}" so far. I need more data. Please search for additional information on:
+    return `I have only ${facts.length} findings on "${sanitizeForMarkdown(query)}" so far. I need more data. Please search for additional information on:
 
 ${topicGaps}
 
@@ -496,7 +509,7 @@ Use the web_search tool to find more specific research results. Then call this s
   return JSON.stringify({ status: "FACTS_CAPTURED", query, state, prompt: `Captured ${facts.length} facts across ${Object.keys(topics).length} topics. Now invoke the transformation phase to convert these into a detailed article.` });
 }
 
-async function transformToArticle(query, facts, conflicts, topics, uniqueSources) {
+async function transformToArticle(query, facts, conflicts, topics, uniqueSources, cfg) {
   const now = new Date();
   const currentYear = String(now.getFullYear());
 
@@ -552,23 +565,30 @@ ${conflictNote}
 
 Write the article now.`;
 
-  const resultRaw = await callLLM(prompt);
+  const resultRaw = await callLLM(prompt, cfg);
   if (resultRaw) {
     return JSON.stringify({ status: "COMPLETED", instruction: resultRaw });
   }
   return synthesizeReportFallback(query, facts, conflicts, topics);
 }
 
-async function callLLM(prompt) {
+async function callLLM(prompt, cfg) {
   try {
     const currentDate = new Date().toLocaleDateString('en-GB', {
       day: 'numeric', month: 'long', year: 'numeric'
     });
-    const res = await fetch('http://localhost:1337/api/v1/chat/completions', {
+    const endpoint = cfg?.endpoint || 'http://localhost:1337/api/v1/chat/completions';
+    const model = cfg?.model || 'gpt-4o';
+    const apiKey = cfg?.apiKey || '';
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+    const res = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: headers,
       body: JSON.stringify({
-        model: 'gpt-4o',
+        model,
         messages: [{ role: 'user', content: `[Current date: ${currentDate}] ${prompt}` }],
       }),
     });
@@ -580,7 +600,7 @@ async function callLLM(prompt) {
   }
 }
 
-async function synthesizeReport(query, storage, ctx, callerId) {
+async function synthesizeReport(query, storage, ctx, callerId, cfg) {
   const facts = storage.topFacts(15);
   const conflicts = storage.getConflicts();
   const result = await llmSynthesizeReport(query, facts, conflicts, ctx, callerId);
@@ -599,7 +619,8 @@ async function synthesizeReport(query, storage, ctx, callerId) {
       parsed.state.facts,
       parsed.state.conflicts,
       parsed.state.topics,
-      parsed.state.uniqueSources
+      parsed.state.uniqueSources,
+      cfg
     );
     return articleResult;
   }
@@ -610,10 +631,10 @@ async function synthesizeReport(query, storage, ctx, callerId) {
 function synthesizeReportFallback(query, facts, conflicts, topics) {
   const totalFacts = facts.length;
   const topicCount = Object.keys(topics).length;
-  const topFacts = facts.slice(0, 5).map(f => f.fact.slice(0, 150));
+  const topFacts = facts.slice(0, 5).map(f => sanitizeForMarkdown(f.fact).slice(0, 150));
 
   let summary = `## Executive Summary\n\n`;
-  summary += `This report presents findings from a multi-round deep research process on "${query}". `;
+  summary += `This report presents findings from a multi-round deep research process on "${sanitizeForMarkdown(query)}". `;
   summary += `${totalFacts} key findings were extracted across ${topicCount} thematic areas through adaptive knowledge graph construction and cross-source conflict resolution.\n\n`;
   summary += `**Core findings include:**\n\n`;
   for (const ft of topFacts) {
@@ -753,7 +774,7 @@ function buildSummarySearchPrompt(query) {
 }
 
 function buildFullFetchPrompt(urls, researchQuery) {
-  const VALID_URL = /^https?:\/\/[a-zA-Z0-9.\-_]+(?:\.[a-zA-Z]{2,})?(?::\d+)?(?:\/[^\s]*)?$/;
+  const VALID_URL = /^(?:(?:https?):\/\/)?(?:(?!localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|0\.0\.0\.0|::1|169\.254\.\d+\.\d+)(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?))(?::\d+)?(?:\/[^\s]*)?$/;
   const safeUrls = (Array.isArray(urls) ? urls : [])
     .filter(u => typeof u === 'string' && VALID_URL.test(u))
     .map(u => u.slice(0, 2048));
@@ -787,6 +808,13 @@ module.exports.runtime = {
         return "Please provide a research query.";
       }
 
+      // LLM config (from setup_args)
+      const llmCfg = {
+        endpoint: this?.runtimeArgs?.LLM_ENDPOINT || 'http://localhost:1337/api/v1/chat/completions',
+        model: this?.runtimeArgs?.LLM_MODEL || 'gpt-4o',
+        apiKey: this?.runtimeArgs?.LLM_API_KEY || ''
+      };
+
       // If searchAngles provided, this is the multi-angle search stage
       if (searchAngles && Array.isArray(searchAngles)) {
         const MAX_ANGLES = this?.runtimeArgs?.MAX_ANGLES ? parseInt(this.runtimeArgs.MAX_ANGLES) : 10;
@@ -803,7 +831,7 @@ module.exports.runtime = {
         return await processResearchLoop(researchQuery, {
           searchResults,
           followUps
-        }, this, callerId);
+        }, this, callerId, llmCfg);
       }
 
       // No params — generate clarification prompt (new clarification step)
