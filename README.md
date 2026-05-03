@@ -53,33 +53,6 @@ This skill is **entirely dependent on the `web-search-mcp` server**. The three-p
 
 Call the skill with pre-collected search results. The skill processes them through the multi-round research loop (same as Phase 3).
 
-## How to Use
-
-### Recommended Flow
-
-Invoke the skill with a research query:
-
-```
-@agent use the stateful-deep-research skill to produce a research report for: "What are the latest trends in renewable energy storage?"
-```
-
-The agent will:
-1. Use the skill's `webSearch` handler to analyse the query and generate search angles
-2. Call `get-web-search-summaries` for each angle (limit: 5 per angle)
-3. Select the best URLs and call `webFetchsingle` with them
-4. Use the skill's `webFetchsingle` handler to call `get-single-web-page-content` for each URL
-5. Call `deepResearch` with the enriched results
-6. The skill automatically requests follow-up searches if more depth is needed
-7. The skill synthesises the final report
-
-### Direct Invocation Mode
-
-If you already have search results:
-
-```
-@agent use the stateful-deep-research skill to produce a research report for: "What are the best WMS solutions?" Results from web search: [{ ... }]
-```
-
 ## Multi-Round Research Flow
 
 ```
