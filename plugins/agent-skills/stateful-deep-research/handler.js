@@ -732,7 +732,7 @@ Please extract the key topics, dimensions, and perspectives that need to be cove
 
 Return a JSON array of strings, where each string is one search angle:
 {"angles": ["Angle 1", "Angle 2", "Angle 3", ...]}`,
-    prompt: `Please analyse this research query and generate ${limit} search angles: "${sanitizeForMarkdown(query)}"`
+    prompt: `Please analyse this research query to generate ${limit} search angles: "${sanitizeForMarkdown(query)}". Then use the "get-web-search-summaries" MCP tool for each angle (limit 5 per angle), and call this skill again with the best URLs from all searches.`
   });
 }
 
