@@ -17,8 +17,10 @@ async function ensureStorageDir(storageRoot) {
 class ResearchStorage {
   constructor(storageDir) {
     const unsafe = path.resolve(storageDir);
-    if (!unsafe.startsWith(STORAGE_DIR_BASE)) {
-      throw new Error(`Invalid storage directory: must be within ${STORAGE_DIR_BASE}`);
+    // Accept env-var override (used by AnythingLLM) or default to plugin's storage dir
+    const allowed = process.env.STORAGE_DIR ? path.resolve(process.env.STORAGE_DIR) : STORAGE_DIR_BASE;
+    if (!unsafe.startsWith(allowed)) {
+      throw new Error(`Invalid storage directory: must be within ${allowed}`);
     }
     this.graphPath = path.join(unsafe, "research-graph.json");
     this.cachePath = path.join(unsafe, "research-reflex-cache.json");
@@ -337,9 +339,10 @@ function trimAndSplitCompound(text) {
 async function processResearchLoop(query, env, ctx, callerId, cfg) {
   const rawMax = parseInt(this?.runtimeArgs?.MAX_SOURCES ?? '');
   const MAX_SOURCES = isNaN(rawMax) ? 15 : Math.min(Math.max(rawMax, 1), 100);
-  const storageRoot = process.env.STORAGE_DIR || path.join(__dirname, "..", "storage");
-  await ensureStorageDir(storageRoot);
-  const storage = new ResearchStorage(storageRoot);
+    const storageRoot = process.env.STORAGE_DIR || path.join(__dirname, "..", "storage");
+    const effectiveStorageRoot = path.resolve(storageRoot);
+    await fs.mkdir(effectiveStorageRoot, { recursive: true });
+    const storage = new ResearchStorage(effectiveStorageRoot);
   await storage.loadGraph();
 
   try {
