@@ -600,7 +600,7 @@ async function callLLM(prompt, cfg) {
   }
 }
 
-async function synthesizeReport(query, storage, ctx, callerId, cfg) {
+async function synthesizeReport(query, storage, ctx, callerId) {
   const facts = storage.topFacts(15);
   const conflicts = storage.getConflicts();
   const result = await llmSynthesizeReport(query, facts, conflicts, ctx, callerId);
@@ -619,14 +619,13 @@ async function synthesizeReport(query, storage, ctx, callerId, cfg) {
       parsed.state.facts,
       parsed.state.conflicts,
       parsed.state.topics,
-      parsed.state.uniqueSources,
-      cfg
+      parsed.state.uniqueSources
     );
     return articleResult;
   }
 
   // Fallback
-  return synthesizeReportFallback(parsed.query, parsed.state?.facts ?? [], parsed.state?.conflicts ?? [], {});
+  return synthesizeReportFallback(parsed.query, parsed.state?.facts ?? [], parsed.state?.conflicts ?? [], parsed.state?.topics ?? {});
 }
 function synthesizeReportFallback(query, facts, conflicts, topics) {
   const totalFacts = facts.length;
@@ -805,15 +804,8 @@ module.exports.runtime = {
     try {
       if (!researchQuery) {
         this.introspect(`${callerId} ERROR: researchQuery is missing or undefined.`);
-        return "Please provide a research query.";
+         return "Please provide a research query.";
       }
-
-      // LLM config (from setup_args)
-      const llmCfg = {
-        endpoint: this?.runtimeArgs?.LLM_ENDPOINT || 'http://localhost:1337/api/v1/chat/completions',
-        model: this?.runtimeArgs?.LLM_MODEL || 'gpt-4o',
-        apiKey: this?.runtimeArgs?.LLM_API_KEY || ''
-      };
 
       // If searchAngles provided, this is the multi-angle search stage
       if (searchAngles && Array.isArray(searchAngles)) {
@@ -831,7 +823,7 @@ module.exports.runtime = {
         return await processResearchLoop(researchQuery, {
           searchResults,
           followUps
-        }, this, callerId, llmCfg);
+        }, this, callerId);
       }
 
       // No params — generate clarification prompt (new clarification step)
