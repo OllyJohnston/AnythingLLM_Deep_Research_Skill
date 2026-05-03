@@ -803,9 +803,15 @@ module.exports.runtime = {
       }
 
       // If searchAngles provided, this is the multi-angle search stage
-      if (searchAngles && Array.isArray(searchAngles)) {
-        const MAX_ANGLES = this?.runtimeArgs?.MAX_ANGLES ? parseInt(this.runtimeArgs.MAX_ANGLES) : 10;
-        return buildMultiAngleSearchPrompt(searchAngles, MAX_ANGLES);
+      if (searchAngles) {
+        let parsedAngles = searchAngles;
+        if (typeof searchAngles === 'string') {
+          parsedAngles = safeJsonParse(searchAngles);
+        }
+        if (parsedAngles && Array.isArray(parsedAngles)) {
+          const MAX_ANGLES = this?.runtimeArgs?.MAX_ANGLES ? parseInt(this.runtimeArgs.MAX_ANGLES) : 10;
+          return buildMultiAngleSearchPrompt(parsedAngles, MAX_ANGLES);
+        }
       }
 
       // If searchResults provided, this is the full-fetch stage (after webFetchsingle)
