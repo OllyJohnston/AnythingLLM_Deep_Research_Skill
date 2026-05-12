@@ -16,6 +16,12 @@ This skill is **entirely dependent on the `web-search-mcp` server**. The three-p
 
 **To install the `web-search-mcp` server**, follow the instructions in the [web-search-mcp repository](https://github.com/OllyJohnston/web-search-mcp). The skill will not function without these MCP tools.
 
+## Runtime Requirements
+
+- **Agent with MCP tools**: The agent must support MCP tool calls (the skill delegates web search to MCP).
+- **Model with strong tool-calling**: Multi-round drill-down requires an LLM that follows tool-calling instructions precisely. Models like Qwen 3.5/3.6 work very well; others may vary in their adherence to search angle generation, follow-up formatting, and JSON parsing.
+- **Multiple invocations**: The skill re-invokes itself 3-4 times — ensure your AnythingLLM setup supports re-invocation.
+
 ## Installation
 
 1. **Install the web-search-mcp server** (see Prerequisites above).
@@ -49,15 +55,21 @@ Call the skill with pre-collected search results. The skill processes them throu
 
 ## How to Use
 
-### Recommended Flow
+### Example Prompt
 
-Invoke the skill with a research query:
+The recommended format for invoking the skill:
 
 ```
-@agent use the stateful-deep-research skill to produce a research report for: "What are the latest trends in renewable energy storage?"
+@agent can you use the deep research tool to research "[research question]?" Can you then turn these facts into a verbose article like google deep research would produce, we need the depth to explain what this actually means in context
 ```
 
-The agent will:
+**Example:**
+```
+@agent can you use the deep research tool to research What are the main trends shaping the future of renewable energy storage in 2026? Can you then turn these facts into a verbose article like google deep research would produce, we need the depth to explain what this actually means in context
+```
+
+### How the Agent Uses the Skill
+
 1. Use the skill's `webSearch` handler to analyse the query and generate search angles
 2. Call `get-web-search-summaries` for each angle (limit: 5 per angle)
 3. Select the best URLs and call `webFetchsingle` with them
@@ -68,10 +80,27 @@ The agent will:
 
 ### Direct Invocation Mode
 
-If you already have search results:
+If you already have search results, the agent can call `deepResearch` directly with the results to skip the multi-angle search phase and proceed straight to research synthesis.
+
+## Sample Output
+
+The report produced follows a structured format:
 
 ```
-@agent use the stateful-deep-research skill to produce a research report for: "What are the best WMS solutions?" Results from web search: [{ ... }]
+DEEP RESEARCH REPORT: What are the main trends shaping renewable energy storage in 2026?
+
+METHODOLOGY:
+- Processed 12 sources with adaptive compression
+- Applied source-authority-based confidence scoring
+- 3 follow-up search rounds performed
+
+KEY FINDINGS:
+
+HIGH CONFIDENCE (5 findings):
+1. LFP batteries now account for 90% of grid storage deployments
+2. Global BESS shipments surged 50% in 2025, projected to grow another 43% in 2026
+3. Long-duration energy storage (10+ hours) reaching commercial maturity
+...
 ```
 
 ## Multi-Round Research Flow
@@ -132,39 +161,6 @@ The agent should parse this JSON, follow the `instruction`, and display the `pro
 - **Adaptive Follow-Up**: Follow-up prompts include fact/topic counts to target specific areas needing more research
 - **Registry-Orchestrator Pattern**: All configuration in `plugin.json` (SSoT), dispatcher reads from registry at runtime
 
-## How to Use
-
-### Recommended Flow
-
-Invoke the skill with a research query:
-
-```
-@agent use the stateful-deep-research skill to produce a research report for: "What are the latest trends in renewable energy storage?"
-```
-
-The agent will:
-1. Use the skill's `webSearch` handler to analyse the query and generate search angles
-2. Call `get-web-search-summaries` for each angle (limit: 5 per angle)
-3. Select the best URLs and call `webFetchsingle` with them
-4. Use the skill's `webFetchsingle` handler to call `get-single-web-page-content` for each URL
-5. Call `deepResearch` with the enriched results
-6. The skill automatically requests follow-up searches if more depth is needed
-7. The skill synthesises the final report
-
-### Direct Invocation Mode
-
-If you already have search results:
-
-```
-@agent use the stateful-deep-research skill to produce a research report for: "What are the best WMS solutions?" Results from web search: [{ ... }]
-```
-
-## Runtime Requirements
-
-- **Agent with MCP tools**: The agent must support MCP tool calls (the skill delegates web search to MCP).
-- **Good LLM model**: Multi-round drill-down requires an LLM that handles MCP tool use correctly.
-- **Multiple invocations**: The skill re-invokes itself 3-4 times — ensure your AnythingLLM setup supports re-invocation.
-
 ## Constraints
 
 - **MCP server timeout**: The `web-search` MCP server enforces a 25-second global timeout. Use `maxContentLength: 2000` (not higher) to stay within budget.
@@ -177,6 +173,17 @@ If you already have search results:
 - `research-graph.json` — the knowledge graph with claims and confidence scores.
 - `research-reflex-cache.json` — cached responses for repeated queries.
 - `research-archive/` — archived HTML from source pages.
+
+## Troubleshooting
+
+| Symptom | Possible Cause | Solution |
+|----------|----------------|---------|
+| Skill does not appear in Custom Skills list | Folder not in correct location, or `hubId` mismatch between folder name and `plugin.json`. | Verify folder name matches `hubId` in `plugin.json`. Ensure it's under `<STORAGE>/plugins/agent-skills/`. |
+| "The tool failed to run for some reason" message | Error in `handler.js` (check console logs). | Look at AnythingLLM backend console (or Docker logs) for `this.logger` output. Common issues: network failure (search API down), LLM endpoint unreachable, file‑IO permissions. |
+| No introspection messages | Skill not invoked, or `this.introspect` not called. | Check that the agent is enabled and the skill is selected. Try invoking via chat with explicit skill name. |
+| Report is empty or "undefined" | LLM response not parsed correctly, or fetch failed. | Add more `this.logger` calls to inspect intermediate values. Verify the LLM endpoint returns JSON with an `answer` field (as assumed in the code). |
+| Multi-round research produces thin article | MCP server timeout (25s) exceeded by full-content extraction with `limit >= 12` | Ensure `maxContentLength: 2000` in search prompts. Agent should retry with `limit: 10` if timeout occurs. |
+| Agent starts fresh search instead of follow-up | Follow-up instruction not parsed correctly by agent | The skill's follow-up prompt now uses `CRITICAL` prefix and concrete JSON format examples. Check handler.js `buildFollowUpPrompt()` content. |
 
 ## Dependencies
 

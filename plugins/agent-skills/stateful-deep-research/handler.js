@@ -452,15 +452,20 @@ async function llmSynthesizeReport(query, facts, conflicts, ctx, callerId) {
   facts.forEach(f => {
     const fact = f.fact.toLowerCase();
     if (/(?:growth|market|revenue|sales|financial|performance|stock|share|stock price|profit|earnings|income|margin)/.test(fact)) {
-      (topics['Financial Performance'] = topics['Financial Performance'] ?? []).push(f);
+      if (!topics['Financial Performance']) topics['Financial Performance'] = [];
+      topics['Financial Performance'].push(f);
     } else if (/(?:product|feature|launch|update|release|version|innovation|technology|software|platform|solution|service|application)/.test(fact)) {
-      (topics['Product & Innovation'] = topics['Product & Innovation'] ?? []).push(f);
+      if (!topics['Product & Innovation']) topics['Product & Innovation'] = [];
+      topics['Product & Innovation'].push(f);
     } else if (/(?:competitor|alternative|rival|competition|industry|market share|landscape|position|standing)/.test(fact)) {
-      (topics['Competitive Landscape'] = topics['Competitive Landscape'] ?? []).push(f);
-    } else if (/(?:customer|user|adoption|demand|pricing|subscription|client|buyer|buyer|buyer|buyer|buyer|buyer)/.test(fact)) {
-      (topics['Customer Insights'] = topics['Customer Insights'] ?? []).push(f);
+      if (!topics['Competitive Landscape']) topics['Competitive Landscape'] = [];
+      topics['Competitive Landscape'].push(f);
+    } else if (/(?:customer|user|adoption|demand|pricing|subscription|client|buyer|buyer|buyer)/.test(fact)) {
+      if (!topics['Customer Insights']) topics['Customer Insights'] = [];
+      topics['Customer Insights'].push(f);
     } else {
-      (topics['General Overview'] = topics['General Overview'] ?? []).push(f);
+      if (!topics['General Overview']) topics['General Overview'] = [];
+      topics['General Overview'].push(f);
     }
   });
 
