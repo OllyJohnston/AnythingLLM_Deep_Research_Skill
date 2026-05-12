@@ -1,8 +1,16 @@
 # Stateful Deep Research Skill
 
-> **⚠️ Prerequisites:** This skill is **entirely dependent on the `web-search-mcp` server** (built by its author). The three-phase search flow (clarification → multi-angle summary → full-content fetch) relies on the following MCP tools: `get-web-search-summaries`, `get-single-web-page-content`, and `full-web-search`. See **Prerequisites** below for installation instructions.
-
 A Google-level deep research tool for AnythingLLM that performs multi-round web search drills with query clarification, adaptive claim extraction, hierarchical knowledge graph construction, and synthesis to produce detailed research reports.
+
+## Quick Install
+
+**1. Prerequisites:** This skill is **entirely dependent on the `web-search-mcp` server** (built by its author). Install the [web-search-mcp server](https://github.com/OllyJohnston/web-search-mcp) first.
+
+**2. Install the skill via the Community Hub:** [Click here to import to AnythingLLM](https://hub.anythingllm.com/i/agent-skill/5yGvdhziWrDqwWzehsGA)
+
+**3. Enable the skill:** Skills imported from the Hub are disabled by default — check **Agent Settings → Custom Skills** and toggle it ON.
+
+**4. Configure** `MAX_SOURCES` (default: 40) and `MAX_ANGLES` (default: 10) in Agent Settings → Custom Skills.
 
 ## Prerequisites
 
@@ -23,6 +31,8 @@ This skill is **entirely dependent on the `web-search-mcp` server**. The three-p
 - **Multiple invocations**: The skill re-invokes itself 3-4 times — ensure your AnythingLLM setup supports re-invocation.
 
 ## Installation
+
+### Manual Installation
 
 1. **Install the web-search-mcp server** (see Prerequisites above).
 2. **Copy the skill folder** into AnythingLLM's storage directory:
