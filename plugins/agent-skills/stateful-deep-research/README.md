@@ -24,7 +24,16 @@ This skill is **entirely dependent on the `web-search-mcp` server**. The three-p
 
 ## Installation
 
-1. **Install the web-search-mcp server** (see Prerequisites above).
+### Quickest Method — Community Hub (Recommended)
+
+1. **Install the `web-search-mcp` server** (see Prerequisites above).
+2. Go to the [Community Hub page](https://hub.anythingllm.com/i/agent-skill/5yGvdhziWrDqwWzehsGA) and click **Import to AnythingLLM**.
+3. **Check the skill is set to ON** after install — skills imported from the Hub are disabled by default and must be manually enabled in Agent Settings.
+4. **Configure** `MAX_SOURCES` (default: 40) and `MAX_ANGLES` (default: 10) in Agent Settings → Custom Skills.
+
+### Manual Installation
+
+1. **Install the `web-search-mcp` server** (see Prerequisites above).
 2. **Copy the skill folder** into AnythingLLM's storage directory:
    ```bash
    cp -r plugins/agent-skills/stateful-deep-research <STORAGE>/plugins/agent-skills/
